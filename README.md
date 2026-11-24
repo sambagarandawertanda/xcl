@@ -132,13 +132,17 @@ xcl rpf D:\data\shaders.rpf --extract NAME --out folder
 - **The game folder is never modified** – writes go to the overlay.
 - Every run writes `report.json` (called stubs, unknown D3D12.X slots and interfaces, XGameRuntime
   classes asked for, shader statistics, audio formats, crash).
-  `d3d12.presents` counts presentations, not visible content. With `XCL_FRAME_DUMP=N` (`N > 1`),
-  the existing optional frame dumps also set `d3d12.last_frame_dump`: the latest sampled frame's
+  `d3d12.presents` counts presentations, not visible content. `XCL_FRAME_DUMP=first` dumps the first
+  shown frame. `XCL_FRAME_DUMP=N` (`N > 1`) samples at a regular cadence. Optional frame dumps also
+  set `d3d12.last_frame_dump`: the latest sampled frame's
   zero-based index, source dimensions, DXGI format, sample step, sample count and `non_dark_samples`
   (decoded 8-bit R+G+B > 30). The field is `null` until a frame is sampled; `non_dark_samples` is
   `null` if its format cannot be decoded. Intermediate render-target dumps do not update it.
   Sampling uses every fourth pixel in each direction (`XCL_FRAME_DUMP_FULL=1`: every pixel).
   A coarse sample can miss detail; a non-dark sample does not establish correct rendering or gameplay.
+- Set `XCL_DSTORAGE_TRACE_FILES=1` to log file IDs, basenames and sizes, when available, for
+  successful host file opens by DirectStorage. Sampled file requests log the same file ID, file
+  offset and requested source byte count.
 - Title data: `%LOCALAPPDATA%\XCL\<title>\` (`%XCL_DATA_ROOT%`): `xcl.toml`, `overlay\`, `saves\`,
   `pls\` (the title's `S:\`), `temp\` (`T:\`), `cache\`, `logs\xcl.log`, `logs\report.json` (the
   previous run's: `xcl.prev.log`, `report.prev.json`).

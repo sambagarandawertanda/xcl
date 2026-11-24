@@ -738,16 +738,36 @@ unsafe fn present_now(min_interval: Duration, frame: Option<(usize, usize)>) {
     }
 }
 
-/// `XCL_FRAME_DUMP=1`: every 120th shown frame is written to the logs folder (`XCL_FRAME_DUMP=n`,
-/// n > 1: every n-th; a title loading at a few frames a second shows few)
+enum FrameDumpSampling {
+    First,
+    Periodic(u64),
+}
+
+impl FrameDumpSampling {
+    fn from_value(value: &str) -> Self {
+        match value {
+            "first" => Self::First,
+            _ => Self::Periodic(value.parse().ok().filter(|&n| n > 1).unwrap_or(120)),
+        }
+    }
+
+    fn due(&self, presented: u64) -> bool {
+        match *self {
+            Self::First => presented == 0,
+            Self::Periodic(every) => presented % every == 20.min(every - 1),
+        }
+    }
+}
+
+/// `XCL_FRAME_DUMP=first`: dump the first shown frame. `XCL_FRAME_DUMP=1`: every 120th shown
+/// frame is written to the logs folder (`XCL_FRAME_DUMP=n`, n > 1: every n-th)
 /// (`frame_<n>.bmp`, a quarter of each side; `XCL_FRAME_DUMP_FULL=1`: full size) – what the title presented, before the window.
 fn frame_dump_due() -> bool {
-    static EVERY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    let every = *EVERY.get_or_init(|| match std::env::var("XCL_FRAME_DUMP") {
-        Ok(v) => v.parse().ok().filter(|&n| n > 1).unwrap_or(120),
-        Err(_) => 0,
-    });
-    every > 0 && PRESENTS.load(Ordering::Relaxed) % every == 20.min(every - 1)
+    static SAMPLING: std::sync::OnceLock<Option<FrameDumpSampling>> = std::sync::OnceLock::new();
+    SAMPLING
+        .get_or_init(|| std::env::var("XCL_FRAME_DUMP").ok().map(|value| FrameDumpSampling::from_value(&value)))
+        .as_ref()
+        .is_some_and(|sampling| sampling.due(PRESENTS.load(Ordering::Relaxed)))
 }
 
 /// Frames shown so far.
@@ -967,6 +987,23 @@ impl Drop for Presenter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_dump_first_and_periodic_sampling() {
+        let first = FrameDumpSampling::from_value("first");
+        assert!(first.due(0));
+        assert!((1..=240).all(|presented| !first.due(presented)));
+
+        let default = FrameDumpSampling::from_value("1");
+        assert!(!default.due(0));
+        assert!(default.due(20));
+        assert!(default.due(140));
+
+        let every_five = FrameDumpSampling::from_value("5");
+        assert!(every_five.due(4));
+        assert!(!every_five.due(5));
+        assert!(every_five.due(9));
+    }
 
     // XCL_WINDOW_POS is process-global; one test covers all modes in sequence.
     #[test]

@@ -448,6 +448,19 @@ impl FileInner {
     }
 }
 
+fn trace_files() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| trace_files_enabled(std::env::var_os("XCL_DSTORAGE_TRACE_FILES").as_deref()))
+}
+
+fn trace_files_enabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value == Some(std::ffi::OsStr::new("1"))
+}
+
+fn trace_file_name(name: &str) -> &std::ffi::OsStr {
+    std::path::Path::new(name).file_name().unwrap_or_else(|| std::ffi::OsStr::new("<unknown>"))
+}
+
 fn file_vtbl() -> &'static [usize] {
     static V: OnceLock<&'static [usize]> = OnceLock::new();
     V.get_or_init(|| {
@@ -474,7 +487,12 @@ unsafe extern "system" fn factory_open_file(_p: *mut c_void, path: *const u16, r
             return e.raw_os_error().map_or(E_INVALIDARG, |c| (0x8007_0000u32 | (c as u32 & 0xFFFF)) as i32);
         }
     };
-    let inner = Arc::new(FileInner { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), path: name.encode_utf16().collect(), file: Mutex::new(Some(Arc::new(file))) });
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    if trace_files() {
+        let size = file.metadata().ok().map(|info| info.len());
+        crate::xlog_info!("DirectStorage: opened file #{id} {:?}, size {size:?}", trace_file_name(&name));
+    }
+    let inner = Arc::new(FileInner { id, path: name.encode_utf16().collect(), file: Mutex::new(Some(Arc::new(file))) });
     let o = new_object(file_vtbl(), inner);
     let hr = file_qi(o, riid, out);
     file_release(o);
@@ -774,6 +792,12 @@ unsafe fn execute(r: &Request, file: Option<&FileInner>, dest_pages: Option<&[us
         REQUESTS.fetch_add(1, Ordering::Relaxed);
         BYTES.fetch_add(n as u64, Ordering::Relaxed);
         if k < 16 || k.is_power_of_two() {
+            if let Some(source) = file.filter(|_| trace_files()) {
+                crate::xlog_info!(
+                    "DirectStorage: request #{k} from file #{}, offset {:#x}, requested source bytes {}",
+                    source.id, r.offset, r.source_size
+                );
+            }
             crate::xlog_info!(
                 "DirectStorage: request #{k}: options {:#x} ({} source{}), destination {:#x}{} ({n} bytes, page offset {}), source size {}, intermediate {}",
                 r.options,
@@ -1395,6 +1419,20 @@ unsafe extern "system" fn queue_query(p: *mut c_void, out: *mut u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_trace_requires_one_and_uses_only_the_basename() {
+        assert!(trace_files_enabled(Some(std::ffi::OsStr::new("1"))));
+        for disabled in [None, Some(""), Some("0"), Some("true"), Some("1 ")] {
+            assert!(!trace_files_enabled(disabled.map(std::ffi::OsStr::new)));
+        }
+
+        let basename = std::ffi::OsStr::new("example.bin");
+        assert_eq!(trace_file_name(r"X:\mount\folder\example.bin"), basename);
+        assert_eq!(trace_file_name("X:/mount/folder/example.bin"), basename);
+        assert_eq!(trace_file_name("example.bin"), basename);
+        assert_eq!(trace_file_name(""), std::ffi::OsStr::new("<unknown>"));
+    }
 
     fn request(options: u64, dst: u64, dst_size: u32, src: u64, offset: u64, src_size: u32) -> [u8; REQUEST_BYTES] {
         let mut b = [0u8; REQUEST_BYTES];
